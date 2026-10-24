@@ -275,12 +275,14 @@ class AlaraRepricerPipeline:
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    # Update post URL to match working route
-                    if "zenone" in url and "zenone-dashboard" not in url:
-                        self.config.surgimac_post_url = self.config.surgimac_post_url.replace(
-                            "zenone-dashboard", "zenone"
-                        )
-                    return data if isinstance(data, list) else data.get("products", [])
+                    if isinstance(data, list):
+                        return data
+                    if isinstance(data, dict):
+                        if "data" in data and isinstance(data["data"], list):
+                            return data["data"]
+                        if "products" in data and isinstance(data["products"], list):
+                            return data["products"]
+                    return []
 
                 if response.status_code == 404:
                     logger.warning(f"Route 404 on {url}, checking alternative...")
@@ -484,7 +486,7 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
                     "trigger_sync": "GET /sync",
                 }
             })
-        elif self.path == "/sync":
+        elif self.path.startswith("/sync"):
             current_state = state_manager.get_snapshot()
             if current_state["status"] == "running":
                 self._send_json(409, {
@@ -492,14 +494,18 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
                     "state": current_state,
                 })
             else:
+                force = "force=1" in self.path or "reset=1" in self.path
                 def run_background():
-                    asyncio.run(AlaraRepricerPipeline(PipelineConfig()).run())
+                    cfg = PipelineConfig()
+                    if force and cfg.checkpoint_file.exists():
+                        cfg.checkpoint_file.unlink(missing_ok=True)
+                    asyncio.run(AlaraRepricerPipeline(cfg).run())
 
                 worker_thread = Thread(target=run_background, daemon=True)
                 worker_thread.start()
 
                 self._send_json(202, {
-                    "message": "Repricer sync job queued and started",
+                    "message": f"Repricer sync job queued (force_reset={force})",
                     "state": state_manager.get_snapshot(),
                 })
         else:
