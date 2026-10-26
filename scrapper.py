@@ -167,7 +167,12 @@ class PipelineConfig:
     proxy_url: Optional[str] = field(
         default_factory=lambda: os.getenv("PROXY_URL", None)
     )
-    timeout_seconds: int = 25
+    scraperapi_key: Optional[str] = field(
+        default_factory=lambda: os.getenv(
+            "SCRAPERAPI_KEY", "7db34b84c59354d8d3b57c7f25a23333"
+        )
+    )
+    timeout_seconds: int = 60
 
     # Local Persistence
     checkpoint_file: Path = Path("alara_processed_ids.txt")
@@ -220,7 +225,18 @@ class AlaraRepricerPipeline:
                 await asyncio.sleep(
                     random.uniform(self.config.request_delay_min, self.config.request_delay_max)
                 )
-                response: Response = await session.get(url, timeout=self.config.timeout_seconds)
+                fetch_url = url
+                params = None
+                if self.config.scraperapi_key:
+                    fetch_url = "http://api.scraperapi.com"
+                    params = {
+                        "api_key": self.config.scraperapi_key,
+                        "url": url,
+                    }
+
+                response: Response = await session.get(
+                    fetch_url, params=params, timeout=self.config.timeout_seconds
+                )
 
                 if response.status_code == 200:
                     return response.json()
@@ -347,7 +363,9 @@ class AlaraRepricerPipeline:
     async def _process_single_product(
         self, session: AsyncSession, product: Dict[str, Any], batch_queue: asyncio.Queue
     ) -> None:
-        alara_id = product.get("alaraProductId")
+        raw_id = product.get("alaraProductId") or ""
+        # Sanitize ID: strip whitespace and any leading/trailing dots
+        alara_id = str(raw_id).strip().strip(".")
         if not alara_id or alara_id in self.processed_ids:
             return
 
@@ -533,15 +551,24 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 diagnostic["alara_homepage"] = {"error": str(e)}
 
-            # 3. Product API test
+            # 3. Product API test via ScraperAPI
             try:
                 from curl_cffi import requests as cffi_requests
-                p_resp = cffi_requests.get("https://alaradental.com/api/products/01KEZKNMED1TVH41ZNZGJZ0NDS", impersonate="chrome124", timeout=10)
+                cfg = PipelineConfig()
+                target_prod_url = "https://alaradental.com/api/products/01KEZKNMED1TVH41ZNZGJZ0NDS"
+                fetch_url = target_prod_url
+                params = None
+                if cfg.scraperapi_key:
+                    fetch_url = "http://api.scraperapi.com"
+                    params = {"api_key": cfg.scraperapi_key, "url": target_prod_url}
+
+                p_resp = cffi_requests.get(fetch_url, params=params, timeout=30)
                 diagnostic["alara_product_api"] = {
+                    "via_scraperapi": bool(cfg.scraperapi_key),
                     "status_code": p_resp.status_code,
                     "server": p_resp.headers.get("server"),
                     "x_vercel_id": p_resp.headers.get("x-vercel-id"),
-                    "body_preview": p_resp.text[:400]
+                    "body_preview": p_resp.text[:300]
                 }
             except Exception as e:
                 diagnostic["alara_product_api"] = {"error": str(e)}
