@@ -508,8 +508,47 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
                     "message": f"Repricer sync job queued (force_reset={force})",
                     "state": state_manager.get_snapshot(),
                 })
+        elif self.path.startswith("/debug"):
+            import urllib.request
+            diagnostic = {}
+            # 1. Egress IP
+            try:
+                ip = urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode().strip()
+                diagnostic["egress_ip"] = ip
+            except Exception as e:
+                diagnostic["egress_ip"] = f"Error: {e}"
+
+            # 2. Curl Cffi test to Alara
+            try:
+                from curl_cffi import requests as cffi_requests
+                resp = cffi_requests.get("https://alaradental.com", impersonate="chrome124", timeout=10)
+                diagnostic["alara_homepage"] = {
+                    "status_code": resp.status_code,
+                    "server": resp.headers.get("server"),
+                    "retry_after": resp.headers.get("retry-after"),
+                    "cf_ray": resp.headers.get("cf-ray"),
+                    "x_vercel_id": resp.headers.get("x-vercel-id"),
+                    "body_preview": resp.text[:400]
+                }
+            except Exception as e:
+                diagnostic["alara_homepage"] = {"error": str(e)}
+
+            # 3. Product API test
+            try:
+                from curl_cffi import requests as cffi_requests
+                p_resp = cffi_requests.get("https://alaradental.com/api/products/01KEZKNMED1TVH41ZNZGJZ0NDS", impersonate="chrome124", timeout=10)
+                diagnostic["alara_product_api"] = {
+                    "status_code": p_resp.status_code,
+                    "server": p_resp.headers.get("server"),
+                    "x_vercel_id": p_resp.headers.get("x-vercel-id"),
+                    "body_preview": p_resp.text[:400]
+                }
+            except Exception as e:
+                diagnostic["alara_product_api"] = {"error": str(e)}
+
+            self._send_json(200, {"diagnostic": diagnostic})
         else:
-            self._send_json(404, {"error": "Route not found", "valid_routes": ["/", "/status", "/sync"]})
+            self._send_json(404, {"error": "Route not found", "valid_routes": ["/", "/status", "/sync", "/debug"]})
 
     def log_message(self, format, *args):
         # Keep web server access logs clean
